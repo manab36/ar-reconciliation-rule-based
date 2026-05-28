@@ -4,8 +4,9 @@ import json
 import uuid
 
 import structlog
+from sqlalchemy.exc import IntegrityError
 
-from app.core.database import SessionLocal
+from app.core.database import get_db_session
 from app.models.record import ARRecord, ProcessedRecord
 from app.services.failure_sim import maybe_fail
 
@@ -13,10 +14,7 @@ logger = structlog.get_logger()
 
 
 def ingest_record(workflow_id: str, record_data: dict) -> dict:
-    """
-    Ingestion stage: parse and persist the raw AR record.
-    Generates an idempotency key to prevent duplicate processing.
-    """
+    """Parse and persist the raw AR record with idempotency check."""
     maybe_fail()
 
     customer_id = record_data.get("customer_id")
@@ -24,8 +22,7 @@ def ingest_record(workflow_id: str, record_data: dict) -> dict:
         json.dumps(record_data, sort_keys=True).encode()
     ).hexdigest()
 
-    db = SessionLocal()
-    try:
+    with get_db_session() as db:
         # Check for duplicate
         existing = (
             db.query(ProcessedRecord).filter_by(idempotency_key=idempotency_key).first()
@@ -65,12 +62,28 @@ def ingest_record(workflow_id: str, record_data: dict) -> dict:
 
         db.add(ar_record)
         db.add(processed)
-        db.commit()
+
+        # Flush to trigger unique constraint check before context manager commits
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            existing = (
+                db.query(ProcessedRecord)
+                .filter_by(idempotency_key=idempotency_key)
+                .first()
+            )
+            if existing:
+                logger.info(
+                    "duplicate_record_concurrent",
+                    customer_id=customer_id,
+                    workflow_id=workflow_id,
+                )
+                return {"status": "DUPLICATE", "record_id": existing.invoice_id}
+            raise
 
         logger.info("record_ingested", record_id=record_id, workflow_id=workflow_id)
         return {"status": "INGESTED", "record_id": record_id}
-    finally:
-        db.close()
 
 
 def parse_csv_records(file_path: str) -> list[dict]:

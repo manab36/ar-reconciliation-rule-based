@@ -3,9 +3,10 @@ import uuid
 from datetime import datetime, timezone
 
 import structlog
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.database import SessionLocal
+from app.core.database import get_db_session
 from app.models.workflow import WorkflowRun, WorkflowStageState
 
 logger = structlog.get_logger()
@@ -32,7 +33,7 @@ def get_next_stage(current: str | None) -> str | None:
 
 
 def create_workflow(db: Session, customer_id: str, record_data: dict) -> WorkflowRun:
-    """Create a new workflow run for a record."""
+    """Create a new workflow run. Returns existing if concurrent duplicate."""
     workflow_id = str(uuid.uuid4())
     invoice_id = record_data.get("customer_id", workflow_id)
 
@@ -45,7 +46,20 @@ def create_workflow(db: Session, customer_id: str, record_data: dict) -> Workflo
         retry_count=0,
     )
     db.add(workflow)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # Another request created the workflow concurrently - return existing
+        existing = db.query(WorkflowRun).filter_by(invoice_id=invoice_id).first()
+        if existing:
+            logger.info(
+                "workflow_create_concurrent_duplicate",
+                workflow_id=existing.id,
+                customer_id=customer_id,
+            )
+            return existing
+        raise
     db.refresh(workflow)
     logger.info("workflow_created", workflow_id=workflow_id, customer_id=customer_id)
     return workflow
@@ -74,16 +88,12 @@ def reset_workflow(db: Session, workflow_id: str):
 
 def update_workflow_stage(workflow_id: str, stage: str, status: str):
     """Update the workflow's current stage and status."""
-    db = SessionLocal()
-    try:
+    with get_db_session() as db:
         workflow = db.query(WorkflowRun).filter_by(id=workflow_id).first()
         if workflow:
             workflow.current_stage = stage
             workflow.status = status
             workflow.updated_at = datetime.now(timezone.utc)
-            db.commit()
-    finally:
-        db.close()
 
 
 def save_stage_result(
@@ -94,8 +104,7 @@ def save_stage_result(
     error: str | None = None,
 ):
     """Persist the result of a stage execution."""
-    db = SessionLocal()
-    try:
+    with get_db_session() as db:
         stage_state = WorkflowStageState(
             workflow_id=workflow_id,
             stage_name=stage_name,
@@ -104,47 +113,32 @@ def save_stage_result(
             error_message=error,
         )
         db.add(stage_state)
-        db.commit()
-    finally:
-        db.close()
 
 
 def increment_retry(workflow_id: str):
     """Increment the retry count for a workflow."""
-    db = SessionLocal()
-    try:
+    with get_db_session() as db:
         workflow = db.query(WorkflowRun).filter_by(id=workflow_id).first()
         if workflow:
             workflow.retry_count += 1
             workflow.updated_at = datetime.now(timezone.utc)
-            db.commit()
-    finally:
-        db.close()
 
 
 def mark_workflow_complete(workflow_id: str):
     """Mark workflow as successfully completed."""
-    db = SessionLocal()
-    try:
+    with get_db_session() as db:
         workflow = db.query(WorkflowRun).filter_by(id=workflow_id).first()
         if workflow:
             workflow.status = "COMPLETED"
             workflow.updated_at = datetime.now(timezone.utc)
-            db.commit()
-            logger.info("workflow_completed", workflow_id=workflow_id)
-    finally:
-        db.close()
+    logger.info("workflow_completed", workflow_id=workflow_id)
 
 
 def mark_workflow_failed(workflow_id: str, error: str):
     """Mark workflow as permanently failed."""
-    db = SessionLocal()
-    try:
+    with get_db_session() as db:
         workflow = db.query(WorkflowRun).filter_by(id=workflow_id).first()
         if workflow:
             workflow.status = "FAILED"
             workflow.updated_at = datetime.now(timezone.utc)
-            db.commit()
-            logger.error("workflow_failed", workflow_id=workflow_id, error=error)
-    finally:
-        db.close()
+    logger.error("workflow_failed", workflow_id=workflow_id, error=error)

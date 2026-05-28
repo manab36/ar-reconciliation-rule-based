@@ -42,17 +42,26 @@ def submit_record(
     """
     Submit a single AR record for processing.
     Idempotent: duplicate submissions return the existing workflow ID.
+    Handles concurrent submissions for the same customer gracefully.
     """
     existing = check_duplicate_submission(db, record.customer_id)
     if existing:
         return SubmitResponse(
             workflow_id=existing.id,
             status=existing.status,
-            message="Duplicate submission — returning existing workflow",
+            message="Duplicate submission - returning existing workflow",
         )
 
     record_data = record.model_dump()
     workflow = create_workflow(db, record.customer_id, record_data)
+
+    # create_workflow may return an existing workflow if concurrent race occurred
+    if workflow.status != "PENDING":
+        return SubmitResponse(
+            workflow_id=workflow.id,
+            status=workflow.status,
+            message="Duplicate submission - returning existing workflow",
+        )
 
     background_tasks.add_task(run_pipeline, workflow.id, "ingestion", record_data)
 
@@ -82,7 +91,7 @@ def update_record(
         return SubmitResponse(
             workflow_id=workflow.id,
             status="PENDING",
-            message="No existing record found — created new workflow",
+            message="No existing record found - created new workflow",
         )
 
     record_data = record.model_dump()
@@ -92,7 +101,7 @@ def update_record(
     return SubmitResponse(
         workflow_id=existing.id,
         status="PENDING",
-        message="Record updated — workflow reprocessing from start",
+        message="Record updated - workflow reprocessing from start",
     )
 
 

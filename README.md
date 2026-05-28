@@ -4,30 +4,54 @@ Rule-based workflow engine for Accounts Receivable reconciliation with retry, re
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    A[CSV / JSON Submission] --> B[FastAPI API]
+    B --> C{Idempotency Check}
+    C -->|Duplicate| Z[Return existing workflow ID]
+    C -->|New| D[Create WorkflowRun - PENDING]
+    D --> E[BackgroundTasks: Run Pipeline]
+    E --> S1[Stage 1: Ingestion]
+    S1 --> S2[Stage 2: Matching]
+    S2 --> S3[Stage 3: Validation]
+    S3 --> S4[Stage 4: Decision Routing]
+    S4 --> G[COMPLETED]
+    S1 -->|Fails 3x| F[FAILED]
+    S2 -->|Fails 3x| F
+    S3 -->|Fails 3x| F
+    S4 -->|Fails 3x| F
+    F --> R[POST /resume - retry from last checkpoint]
+    R --> E
 ```
-CSV / JSON Submission
-        │
-   FastAPI API
-        │
-  Idempotency Check
-        │
-   SQLite / PostgreSQL
-    (workflow state)
-        │
-  BackgroundTasks
-        │
-┌───────┼────────┬───────────────┐
-│       │        │               │
-Ingest  Match  Validate     Route
-│       │        │               │
-└───────┼────────┴───────────────┘
-        │
-  Persist stage result
-        │
-  Retry on failure (up to 3×)
-        │
-  Resume from last stage
-```
+
+### Pipeline Execution Flow
+
+Each stage in the pipeline:
+1. Updates workflow status to `RUNNING`
+2. Attempts execution up to `MAX_RETRIES` (3) times
+3. On success -> persists result in `workflow_stage_state`, passes enriched data to next stage
+4. On failure after all retries -> marks workflow `FAILED` and stops
+5. Failed workflows can be resumed from the last successful stage via `POST /resume/{id}`
+
+### Concurrency & ACID Guarantees
+
+- **Idempotency key** (SHA-256 of record data) with a `UNIQUE` DB constraint prevents duplicate records even under concurrent writes
+- **IntegrityError handling**: If two processes race past the duplicate check, the DB constraint catches it and the second process gracefully returns `DUPLICATE`
+- **Atomic commits**: `ARRecord` + `ProcessedRecord` are committed together - both succeed or neither persists
+- **Workflow uniqueness**: `invoice_id` on `workflow_runs` is unique, preventing duplicate workflows for the same customer
+- **Session safety**: All background pipeline DB operations use a context manager (`get_db_session()`) that auto-commits on success and auto-rolls-back on any exception - no leaked connections or partial writes
+- **Pool health**: SQLAlchemy `pool_pre_ping=True` ensures stale DB connections are detected and recycled
+
+### Failure & Retry Strategy
+
+| Scenario | Handling |
+|----------|----------|
+| Stage raises exception | Retried up to `MAX_RETRIES` (3) times, each attempt logged |
+| All retries exhausted | Workflow marked `FAILED`, stage error persisted |
+| Unexpected pipeline crash | Top-level catch-all ensures workflow moves to `FAILED` (never stuck in `RUNNING`) |
+| Concurrent duplicate submit | DB constraint catches race; returns existing workflow gracefully |
+| DB connection lost mid-pipeline | Context manager rolls back, exception surfaces -> workflow marked `FAILED` |
+| Resume after failure | `POST /resume/{id}` reconstructs state from successful stages, resumes from next stage |
 
 ## Key Features
 
@@ -37,7 +61,7 @@ Ingest  Match  Validate     Route
 - **Idempotency**: Duplicate submissions return the existing workflow ID
 - **Bulk Upload**: CSV upload processes each row as an independent workflow in parallel
 - **Persistent State**: SQLite (default) or PostgreSQL stores workflow state, stage results, and records
-- **Modular Stages**: Ingestion → Matching → Validation → Decision Routing
+- **Modular Stages**: Ingestion -> Matching -> Validation -> Decision Routing
 - **Dashboard & Export**: Stats endpoint, enhanced workflow listing with staleness detection, CSV export
 
 ## Stack
@@ -131,9 +155,9 @@ POSTGRES_DB=ar_reconciliation
 ## Workflow Stages
 
 1. **Ingestion**: Parse record, generate SHA-256 idempotency key, persist to DB
-2. **Matching**: Compare invoice vs payment totals (with tolerance) → `MATCHED` / `PARTIAL` / `OVERPAID` / `OUTSTANDING`
-3. **Validation**: Business rule checks — positive amounts, valid exchange rates, required fields
-4. **Decision Routing**: Route based on match result + validation outcome → `AUTO_APPROVED` / `MANUAL_REVIEW` / `FINANCE_REVIEW` / `COLLECTION_QUEUE` / `REJECTED`
+2. **Matching**: Compare invoice vs payment totals (with tolerance) -> `MATCHED` / `PARTIAL` / `OVERPAID` / `OUTSTANDING`
+3. **Validation**: Business rule checks - positive amounts, valid exchange rates, required fields
+4. **Decision Routing**: Route based on match result + validation outcome -> `AUTO_APPROVED` / `MANUAL_REVIEW` / `FINANCE_REVIEW` / `COLLECTION_QUEUE` / `REJECTED`
 
 ### Routing Logic
 
@@ -148,10 +172,10 @@ POSTGRES_DB=ar_reconciliation
 
 ## Database Schema
 
-- `workflow_runs` — Tracks each workflow's current state, stage, and retry count
-- `workflow_stage_state` — Records each stage execution attempt, output JSON, and errors
-- `ar_records` — Persisted AR records from ingestion
-- `processed_records` — SHA-256 idempotency key tracking
+- `workflow_runs` - Tracks each workflow's current state, stage, and retry count
+- `workflow_stage_state` - Records each stage execution attempt, output JSON, and errors
+- `ar_records` - Persisted AR records from ingestion
+- `processed_records` - SHA-256 idempotency key tracking
 
 ## Project Structure
 
@@ -204,50 +228,3 @@ curl http://localhost:8000/workflow/{workflow_id}
 # Resume failed workflow
 curl -X POST http://localhost:8000/resume/{workflow_id}
 ```
-
-## Project Structure
-
-```
-ar_reconciliation/
-├── app/
-│   ├── api/
-│   │   └── routes.py           # FastAPI endpoints
-│   ├── core/
-│   │   ├── celery_app.py       # Celery configuration
-│   │   ├── config.py           # App settings (Pydantic)
-│   │   └── database.py         # SQLAlchemy engine + session
-│   ├── models/
-│   │   ├── workflow.py         # WorkflowRun, WorkflowStageState
-│   │   └── record.py          # ARRecord, ProcessedRecord
-│   ├── schemas/
-│   │   └── workflow.py         # Pydantic request/response models
-│   ├── services/
-│   │   ├── failure_sim.py      # Random failure simulation
-│   │   ├── ingest.py           # Ingestion stage
-│   │   ├── matching.py         # Matching stage
-│   │   ├── validation.py       # Validation stage
-│   │   ├── routing.py          # Decision routing stage
-│   │   └── workflow_engine.py  # Workflow state management
-│   └── workers/
-│       └── tasks.py            # Celery task definitions
-├── alembic/                    # Database migrations
-├── data/
-│   └── erp_export.csv          # Kaggle dataset
-├── pyproject.toml
-├── main.py
-└── README.md
-```
-
-## Configuration
-
-Environment variables (see `.env.example`):
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | `sqlite:///./data/ar_reconciliation.db` | Database connection |
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection |
-| `CELERY_BROKER_URL` | `redis://localhost:6379/0` | Celery broker |
-| `CELERY_RESULT_BACKEND` | `redis://localhost:6379/1` | Celery results |
-| `FAILURE_RATE` | `0.20` | Simulated failure rate |
-| `MAX_RETRIES` | `3` | Max retry attempts per stage |
-| `RETRY_COUNTDOWN` | `5` | Seconds between retries |

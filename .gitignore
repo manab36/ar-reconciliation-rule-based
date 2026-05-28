@@ -35,10 +35,6 @@ env/
 # Environment files
 .env
 
-# Database
-*.db
-data/*.db
-
 # IDE
 .idea/
 .vscode/
@@ -47,9 +43,6 @@ data/*.db
 dist/
 build/
 *.egg-info/
-
-# Celery
-celerybeat-schedule
 
 # Ruff
 .ruff_cache/

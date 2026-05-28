@@ -35,10 +35,22 @@ def execute_stage(workflow_id: str, stage: str, record_data: dict) -> dict:
 
 
 def run_pipeline(workflow_id: str, start_stage: str, record_data: dict):
-    """
-    Run the workflow pipeline from start_stage to completion.
-    Each stage is retried up to MAX_RETRIES on failure.
-    """
+    """Run the pipeline from start_stage with per-stage retries."""
+    try:
+        _execute_pipeline(workflow_id, start_stage, record_data)
+    except Exception as exc:
+        # Catch-all so workflow doesn't stay stuck in RUNNING
+        logger.critical(
+            "pipeline_unexpected_error",
+            workflow_id=workflow_id,
+            error=str(exc),
+            exc_type=type(exc).__name__,
+        )
+        mark_workflow_failed(workflow_id, f"Unexpected error: {exc}")
+
+
+def _execute_pipeline(workflow_id: str, start_stage: str, record_data: dict):
+    """Internal pipeline execution with retry logic per stage."""
     stage = start_stage
 
     while stage:

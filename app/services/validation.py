@@ -6,15 +6,7 @@ logger = structlog.get_logger()
 
 
 def validate_record(workflow_id: str, record_data: dict) -> dict:
-    """
-    Validation stage: apply business rules to ensure record integrity.
-
-    Checks:
-    - Customer ID is present
-    - Invoice total is non-negative
-    - Payment total is non-negative
-    - Exchange rates are positive
-    """
+    """Apply business rule checks (required fields, non-negative amounts, valid rates)."""
     maybe_fail()
 
     errors = []

@@ -49,7 +49,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow all origins for POC (restrict in production)
+# CORS - allow all origins for POC (restrict in production)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

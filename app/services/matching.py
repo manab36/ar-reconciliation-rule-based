@@ -7,15 +7,7 @@ logger = structlog.get_logger()
 
 
 def match_record(workflow_id: str, record_data: dict) -> dict:
-    """
-    Matching stage: compare invoice total vs payment total to classify the record.
-
-    Categories:
-    - MATCHED: payment within tolerance % of invoice
-    - OUTSTANDING: no payment
-    - PARTIAL: partial payment
-    - OVERPAID: payment exceeds invoice
-    """
+    """Compare invoice vs payment totals and classify as MATCHED/OUTSTANDING/PARTIAL/OVERPAID."""
     maybe_fail()
 
     invoice_total = record_data.get("invoice_total") or 0.0
