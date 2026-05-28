@@ -1,58 +1,58 @@
 # AR Reconciliation Workflow Engine
 
-Asynchronous workflow engine for Accounts Receivable reconciliation with retry, resume, and parallel execution.
+Rule-based workflow engine for Accounts Receivable reconciliation with retry, resume, and background execution.
 
 ## Architecture
 
 ```
-CSV/Kaggle Dataset
-       │
-  FastAPI API
-       │
- Idempotency Check
-       │
-     SQLite
- (workflow state)
-       │
-  Celery Queue
-  (Redis Broker)
-       │
-┌──────┼──────┬──────────────┐
-│      │      │              │
-Ingest Match Validate    Route
-│      │      │              │
-└──────┼──────┴──────────────┘
-       │
- Persist stage result
-     (SQLite)
-       │
-  Retry on failure
-       │
- Resume from last stage
+CSV / JSON Submission
+        │
+   FastAPI API
+        │
+  Idempotency Check
+        │
+   SQLite / PostgreSQL
+    (workflow state)
+        │
+  BackgroundTasks
+        │
+┌───────┼────────┬───────────────┐
+│       │        │               │
+Ingest  Match  Validate     Route
+│       │        │               │
+└───────┼────────┴───────────────┘
+        │
+  Persist stage result
+        │
+  Retry on failure (up to 3×)
+        │
+  Resume from last stage
 ```
 
 ## Key Features
 
-- **Async Processing**: Celery workers process each workflow stage in parallel
-- **Retry Mechanism**: Random failures (20% rate) with automatic retry (3 attempts)
-- **Resume from Checkpoint**: Failed workflows resume from last successful stage
-- **Idempotency**: Duplicate submissions return existing workflow ID
-- **Parallel Execution**: Multiple workflows processed concurrently via Celery workers
-- **Persistent State**: SQLite stores workflow state, stage results, and records
+- **Background Processing**: FastAPI `BackgroundTasks` processes each workflow pipeline asynchronously
+- **Retry Mechanism**: Configurable random failure simulation (20% default) with automatic retry (3 attempts)
+- **Resume from Checkpoint**: Failed workflows resume from the last successful stage
+- **Idempotency**: Duplicate submissions return the existing workflow ID
+- **Bulk Upload**: CSV upload processes each row as an independent workflow in parallel
+- **Persistent State**: SQLite (default) or PostgreSQL stores workflow state, stage results, and records
 - **Modular Stages**: Ingestion → Matching → Validation → Decision Routing
+- **Dashboard & Export**: Stats endpoint, enhanced workflow listing with staleness detection, CSV export
 
 ## Stack
 
 | Component | Technology |
 |-----------|-----------|
 | API | FastAPI |
-| Async Workers | Celery |
-| Broker | Redis |
-| Database | SQLite (POC) |
-| ORM | SQLAlchemy |
+| Background Processing | FastAPI BackgroundTasks |
+| Database | SQLite (default) / PostgreSQL |
+| ORM | SQLAlchemy 2.0 |
 | Migrations | Alembic |
-| Schema Validation | Pydantic |
+| Schema Validation | Pydantic v2 |
+| Settings | pydantic-settings (`.env` support) |
 | Logging | Structlog |
+| Build | Hatchling |
 
 ## Quick Start
 
@@ -60,44 +60,126 @@ Ingest Match Validate    Route
 # Install dependencies
 uv pip install -e .
 
-# Start Redis (required for Celery broker)
-redis-server
-
-# Run API
+# Run API (auto-creates SQLite DB on startup)
 uvicorn app.api.routes:app --reload --port 8000
 
-# Run Celery worker (separate terminal)
-celery -A app.workers.tasks worker --loglevel=info
+# Or use main.py
+python main.py
 ```
 
 Services:
 - API: http://localhost:8000
 - Swagger Docs: http://localhost:8000/docs
 
+### PostgreSQL (optional)
+
+Set environment variables or create a `.env` file:
+
+```env
+DB_TYPE=postgresql
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=secret
+POSTGRES_DB=ar_reconciliation
+```
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DB_TYPE` | `sqlite` | Database backend (`sqlite` or `postgresql`) |
+| `DATABASE_URL` | `sqlite:///./data/ar_reconciliation.db` | SQLite connection string |
+| `FAILURE_RATE` | `0.20` | Simulated random failure probability per stage |
+| `MAX_RETRIES` | `3` | Max retry attempts per stage |
+| `MATCH_TOLERANCE_PERCENT` | `5.0` | % difference allowed to count as MATCHED |
+| `HIGH_VALUE_THRESHOLD` | `10000.0` | Invoice amount above which records are flagged high-value |
+| `STALE_MINUTES` | `10` | Failed workflows older than this are marked stale |
+
 ## API Endpoints
+
+### Submissions
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/submit` | Submit single AR record |
+| POST | `/submit` | Submit single AR record (idempotent) |
+| PUT | `/submit/{customer_id}` | Update existing record and reprocess |
 | POST | `/bulk-upload` | Upload CSV for bulk processing |
-| GET | `/workflow/{id}` | Get workflow status + stage details |
-| POST | `/resume/{id}` | Resume failed workflow |
-| GET | `/workflows` | List all workflows (filterable) |
+
+### Workflows
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/workflow/{id}` | Get workflow status + all stage details |
+| POST | `/resume/{id}` | Resume failed workflow from last checkpoint |
+| GET | `/workflows` | List all workflows (filterable by status, paginated) |
+
+### Dashboard
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/stats` | Aggregate counts by status + routing decisions |
+| GET | `/workflows/enhanced` | Workflow list with staleness flag and last error |
+| GET | `/export` | Download completed results as CSV |
+
+### System
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/health` | Health check |
 
 ## Workflow Stages
 
-1. **Ingestion**: Parse record, generate idempotency key, persist to DB
-2. **Matching**: Compare invoice vs payment totals → MATCHED/PARTIAL/OVERPAID/OUTSTANDING
-3. **Validation**: Business rule checks (positive amounts, valid rates, required fields)
-4. **Decision Routing**: Route to AUTO_APPROVED/MANUAL_REVIEW/FINANCE_REVIEW/COLLECTION_QUEUE/REJECTED
+1. **Ingestion**: Parse record, generate SHA-256 idempotency key, persist to DB
+2. **Matching**: Compare invoice vs payment totals (with tolerance) → `MATCHED` / `PARTIAL` / `OVERPAID` / `OUTSTANDING`
+3. **Validation**: Business rule checks — positive amounts, valid exchange rates, required fields
+4. **Decision Routing**: Route based on match result + validation outcome → `AUTO_APPROVED` / `MANUAL_REVIEW` / `FINANCE_REVIEW` / `COLLECTION_QUEUE` / `REJECTED`
+
+### Routing Logic
+
+| Condition | Decision |
+|-----------|----------|
+| Validation failed | `REJECTED` |
+| High-value + not matched | `FINANCE_REVIEW` |
+| Matched | `AUTO_APPROVED` |
+| Partial payment | `MANUAL_REVIEW` |
+| Overpaid | `FINANCE_REVIEW` |
+| Outstanding | `COLLECTION_QUEUE` |
 
 ## Database Schema
 
-- `workflow_runs` — Tracks each workflow's current state and stage
-- `workflow_stage_state` — Records each stage execution attempt and output
+- `workflow_runs` — Tracks each workflow's current state, stage, and retry count
+- `workflow_stage_state` — Records each stage execution attempt, output JSON, and errors
 - `ar_records` — Persisted AR records from ingestion
-- `processed_records` — Idempotency tracking
+- `processed_records` — SHA-256 idempotency key tracking
+
+## Project Structure
+
+```
+app/
+├── api/
+│   ├── routes.py          # FastAPI app, lifespan, middleware, routers
+│   ├── submissions.py     # POST /submit, PUT /submit/{id}, POST /bulk-upload
+│   ├── workflows.py       # GET /workflow/{id}, POST /resume/{id}, GET /workflows
+│   ├── dashboard.py       # GET /stats, /workflows/enhanced, /export
+│   └── health.py          # GET /health
+├── core/
+│   ├── config.py          # Settings via pydantic-settings
+│   └── database.py        # SQLAlchemy engine, session, Base
+├── models/
+│   ├── record.py          # ARRecord, ProcessedRecord ORM models
+│   └── workflow.py        # WorkflowRun, WorkflowStageState ORM models
+├── schemas/
+│   └── workflow.py        # Pydantic request/response schemas
+└── services/
+    ├── pipeline.py        # Stage orchestrator with retry loop
+    ├── ingest.py          # Ingestion stage logic
+    ├── matching.py        # Matching stage logic
+    ├── validation.py      # Validation stage logic
+    ├── routing.py         # Decision routing stage logic
+    ├── failure_sim.py     # Random failure simulator (POC demo)
+    └── workflow_engine.py # Workflow CRUD and state transitions
+```
 
 ## Example Usage
 
