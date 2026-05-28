@@ -21,3 +21,47 @@ rad.json
 *.flf
 #Test results file
 TestResults.xml
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+
+# Database
+*.db
+data/*.db
+
+# IDE
+.idea/
+.vscode/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# Celery
+celerybeat-schedule
+
+# Ruff
+.ruff_cache/
+
+# pytest
+.pytest_cache/
+
+# UV
+uv.lock
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+*.Zone.Identifier
