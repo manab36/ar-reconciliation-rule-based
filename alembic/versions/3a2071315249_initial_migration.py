@@ -85,6 +85,7 @@ def upgrade() -> None:
         sa.Column("output_json", sa.Text(), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column("updated_at", sa.DateTime(), nullable=True),
+        sa.ForeignKeyConstraint(["workflow_id"], ["workflow_runs.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(

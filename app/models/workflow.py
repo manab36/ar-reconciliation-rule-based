@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -34,7 +34,7 @@ class WorkflowStageState(Base):
     __tablename__ = "workflow_stage_state"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    workflow_id = Column(String, nullable=False, index=True)
+    workflow_id = Column(String, ForeignKey("workflow_runs.id"), nullable=False, index=True)
     stage_name = Column(String, nullable=False)
     status = Column(
         String, nullable=False, default="PENDING"
@@ -47,9 +47,4 @@ class WorkflowStageState(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
-    workflow = relationship(
-        "WorkflowRun",
-        back_populates="stages",
-        foreign_keys=[workflow_id],
-        primaryjoin="WorkflowStageState.workflow_id == WorkflowRun.id",
-    )
+    workflow = relationship("WorkflowRun", back_populates="stages")
