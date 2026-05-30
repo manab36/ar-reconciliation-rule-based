@@ -2,6 +2,7 @@
 name = "ar-reconciliation"
 version = "0.1.0"
 description = "Async AR Reconciliation Workflow Engine - POC"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
@@ -14,6 +15,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "aiosqlite>=0.20.0",
     "psycopg2-binary>=2.9.0",
+    "pytz>=2024.1",
 ]
 
 [project.optional-dependencies]
@@ -23,10 +25,50 @@ postgres = [
 dev = [
     "pytest>=8.0.0",
     "httpx>=0.27.0",
+    "ruff>=0.12.0",
+]
+qa = [
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.ruff]
+exclude = [
+    ".venv",
+    "venv",
+    "__pycache__",
+    "alembic/versions",
+]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # Pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+]
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+    "B008",   # Ignore FastAPI Depends() pattern
+]
+fixable = ["ALL"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
 
 [build-system]
 requires = ["hatchling"]

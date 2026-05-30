@@ -1,9 +1,9 @@
 from datetime import datetime
+from pydantic import ConfigDict
+from app.schemas.api_base import APIBaseRequest, APIBaseResponse
 
-from pydantic import BaseModel, ConfigDict
 
-
-class RecordSubmit(BaseModel):
+class RecordSubmit(APIBaseRequest):
     customer_id: str
     customer_name: str | None = None
     customer_balance: float | None = None
@@ -21,11 +21,10 @@ class RecordSubmit(BaseModel):
     adjustment_exchange_rate: float | None = None
 
 
-class WorkflowResponse(BaseModel):
+class WorkflowResponse(APIBaseResponse):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
-    invoice_id: str
     customer_id: str | None = None
     status: str
     current_stage: str | None = None
@@ -34,7 +33,7 @@ class WorkflowResponse(BaseModel):
     updated_at: datetime | None = None
 
 
-class StageStateResponse(BaseModel):
+class StageStateResponse(APIBaseResponse):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -46,29 +45,28 @@ class StageStateResponse(BaseModel):
     updated_at: datetime | None = None
 
 
-class WorkflowDetailResponse(BaseModel):
+class WorkflowDetailResponse(APIBaseResponse):
     workflow: WorkflowResponse
     stages: list[StageStateResponse]
 
 
-class BulkUploadResponse(BaseModel):
+class BulkUploadResponse(APIBaseResponse):
     total_records: int
     submitted: int
     duplicates: int
     workflow_ids: list[str]
 
 
-class SubmitResponse(BaseModel):
+class SubmitResponse(APIBaseResponse):
     workflow_id: str
     status: str
     message: str
 
 
-class WorkflowListItem(BaseModel):
+class WorkflowListItem(APIBaseResponse):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
-    invoice_id: str
     customer_id: str | None = None
     status: str
     current_stage: str | None = None
@@ -79,7 +77,7 @@ class WorkflowListItem(BaseModel):
     updated_at: datetime | None = None
 
 
-class StatsResponse(BaseModel):
+class StatsResponse(APIBaseResponse):
     total_workflows: int
     completed: int
     failed: int

@@ -1,144 +1,124 @@
-import json
-import uuid
-from datetime import datetime, timezone
+
+
 
 import structlog
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-
 from app.core.database import get_db_session
-from app.models.workflow import WorkflowRun, WorkflowStageState
+from database_ops.model import WorkflowRun, WorkflowRunStatus, WorkflowStageName
+from database_ops.repositories.workflow_repository import WorkflowRepository
+from database_ops.repositories.customer_repository import CustomerRepository
+from pydantic import BaseModel
+from app.core.config import Settings
+
+class WorkflowCreate(BaseModel):
+    customer_id: str
+    record_data: dict
+
+class StageStateModel(BaseModel):
+    workflow_id: str
+    stage_name: WorkflowStageName
+    status: WorkflowRunStatus
+    output: dict | None = None
+    error: str | None = None
+
 
 logger = structlog.get_logger()
 
-STAGES = [
-    "ingestion",
-    "matching",
-    "validation",
-    "decision_routing",
-]
+# Load pipeline stages from config
+settings = Settings()
+STAGES = settings.AR_RECONCILIATION_PIPELINE_STAGES
 
 
-def get_next_stage(current: str | None) -> str | None:
+def get_next_stage(current: WorkflowStageName | str | None) -> WorkflowStageName | None:
     """Return the next stage in the pipeline, or None if complete."""
     if current is None:
-        return STAGES[0]
+        return WorkflowStageName.INGESTION
+    if isinstance(current, WorkflowStageName):
+        current = current.value
     try:
         idx = STAGES.index(current)
     except ValueError:
+        logger.error("invalid_current_stage", current_stage=current)
         return None
     if idx + 1 >= len(STAGES):
         return None
-    return STAGES[idx + 1]
+    return WorkflowStageName(STAGES[idx + 1])
 
 
-def create_workflow(db: Session, customer_id: str, record_data: dict) -> WorkflowRun:
+def create_workflow(db: Session, workflow: WorkflowCreate) -> WorkflowRun:
     """Create a new workflow run. Returns existing if concurrent duplicate."""
-    workflow_id = str(uuid.uuid4())
-    invoice_id = record_data.get("customer_id", workflow_id)
-
-    workflow = WorkflowRun(
-        id=workflow_id,
-        invoice_id=invoice_id,
-        customer_id=customer_id,
-        status="PENDING",
-        current_stage=None,
-        retry_count=0,
-    )
-    db.add(workflow)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        # Another request created the workflow concurrently - return existing
-        existing = db.query(WorkflowRun).filter_by(invoice_id=invoice_id).first()
-        if existing:
-            logger.info(
-                "workflow_create_concurrent_duplicate",
-                workflow_id=existing.id,
-                customer_id=customer_id,
-            )
-            return existing
-        raise
-    db.refresh(workflow)
-    logger.info("workflow_created", workflow_id=workflow_id, customer_id=customer_id)
-    return workflow
+    # Check if customer exists using CustomerRepository
+    customer_repo = CustomerRepository(db)
+    customer = customer_repo.get_customer_by_id(workflow.customer_id)
+    if not customer:
+        name = getattr(workflow, "customer_name", None) or getattr(workflow, "name", None) or workflow.customer_id
+        customer_repo.add_customer(id=workflow.customer_id, name=name)
+    repo = WorkflowRepository(db)
+    return repo.create_workflow(workflow)
 
 
 def check_duplicate_submission(db: Session, customer_id: str) -> WorkflowRun | None:
     """Check if a workflow already exists for this customer (idempotency)."""
-    return db.query(WorkflowRun).filter_by(invoice_id=customer_id).first()
+    repo = WorkflowRepository(db)
+    return repo.get_workflow_by_customer_id(customer_id)
 
 
 def reset_workflow(db: Session, workflow_id: str):
     """Reset a workflow to reprocess from scratch. Clears old stage results."""
-    workflow = db.query(WorkflowRun).filter_by(id=workflow_id).first()
-    if workflow:
-        workflow.status = "PENDING"
-        workflow.current_stage = None
-        workflow.retry_count = 0
-        workflow.updated_at = datetime.now(timezone.utc)
-        db.query(WorkflowStageState).filter_by(workflow_id=workflow_id).delete()
-        db.commit()
-        logger.info("workflow_reset", workflow_id=workflow_id)
+    repo = WorkflowRepository(db)
+    repo.reset_workflow(workflow_id)
+
 
 
 # --- Functions used by the background pipeline (use their own session) ---
-
-
-def update_workflow_stage(workflow_id: str, stage: str, status: str):
+def update_workflow_stage(workflow_id: str, stage: WorkflowStageName | str, status: WorkflowRunStatus | str):
     """Update the workflow's current stage and status."""
     with get_db_session() as db:
-        workflow = db.query(WorkflowRun).filter_by(id=workflow_id).first()
-        if workflow:
-            workflow.current_stage = stage
-            workflow.status = status
-            workflow.updated_at = datetime.now(timezone.utc)
+        repo = WorkflowRepository(db)
+        repo.update_workflow_stage(
+            workflow_id,
+            stage if isinstance(stage, WorkflowStageName) else WorkflowStageName(stage),
+            status if isinstance(status, WorkflowRunStatus) else WorkflowRunStatus(status),
+        )
 
 
 def save_stage_result(
     workflow_id: str,
-    stage_name: str,
-    status: str,
+    customer_id: str,
+    stage_name: WorkflowStageName | str,
+    status: WorkflowRunStatus | str,
     output: dict | None = None,
     error: str | None = None,
 ):
     """Persist the result of a stage execution."""
     with get_db_session() as db:
-        stage_state = WorkflowStageState(
-            workflow_id=workflow_id,
-            stage_name=stage_name,
-            status=status,
-            output_json=json.dumps(output) if output else None,
-            error_message=error,
+        repo = WorkflowRepository(db)
+        repo.save_stage_result(
+            workflow_id,
+            customer_id,
+            stage_name if isinstance(stage_name, str) else stage_name.value,
+            status if isinstance(status, WorkflowRunStatus) else WorkflowRunStatus(status),
+            output,
+            error,
         )
-        db.add(stage_state)
 
 
 def increment_retry(workflow_id: str):
     """Increment the retry count for a workflow."""
     with get_db_session() as db:
-        workflow = db.query(WorkflowRun).filter_by(id=workflow_id).first()
-        if workflow:
-            workflow.retry_count += 1
-            workflow.updated_at = datetime.now(timezone.utc)
+        repo = WorkflowRepository(db)
+        repo.increment_retry(workflow_id)
 
 
 def mark_workflow_complete(workflow_id: str):
     """Mark workflow as successfully completed."""
     with get_db_session() as db:
-        workflow = db.query(WorkflowRun).filter_by(id=workflow_id).first()
-        if workflow:
-            workflow.status = "COMPLETED"
-            workflow.updated_at = datetime.now(timezone.utc)
-    logger.info("workflow_completed", workflow_id=workflow_id)
+        repo = WorkflowRepository(db)
+        repo.mark_workflow_complete(workflow_id)
 
 
 def mark_workflow_failed(workflow_id: str, error: str):
     """Mark workflow as permanently failed."""
     with get_db_session() as db:
-        workflow = db.query(WorkflowRun).filter_by(id=workflow_id).first()
-        if workflow:
-            workflow.status = "FAILED"
-            workflow.updated_at = datetime.now(timezone.utc)
-    logger.error("workflow_failed", workflow_id=workflow_id, error=error)
+        repo = WorkflowRepository(db)
+        repo.mark_workflow_failed(workflow_id, error)

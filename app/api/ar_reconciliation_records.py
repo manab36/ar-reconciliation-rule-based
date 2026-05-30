@@ -11,16 +11,17 @@ from app.schemas.workflow import (
     RecordSubmit,
     SubmitResponse,
 )
-from app.services.pipeline import run_pipeline
+from app.services.pipeline import PipelineRunner
 from app.services.workflow_engine import (
     check_duplicate_submission,
     create_workflow,
     reset_workflow,
 )
+from database_ops.model import WorkflowRunStatus, WorkflowStageName
 
 logger = structlog.get_logger()
 
-router = APIRouter(tags=["submissions"])
+router = APIRouter(tags=["ar_reconciliation_records"])
 
 
 def _safe_float(value: str | None) -> float | None:
@@ -44,35 +45,37 @@ def submit_record(
     Idempotent: duplicate submissions return the existing workflow ID.
     Handles concurrent submissions for the same customer gracefully.
     """
+
+    # TODO: If resubmission is received while an existing workflow previously failed for same data, should we reset the workflow and reprocess? For now we return the existing workflow regardless of status.
+
     existing = check_duplicate_submission(db, record.customer_id)
     if existing:
         return SubmitResponse(
             workflow_id=existing.id,
-            status=existing.status,
-            message="Duplicate submission - returning existing workflow",
+            status=existing.status if isinstance(existing.status, WorkflowRunStatus) else WorkflowRunStatus[existing.status],
+            message="Duplicate submission: returning existing workflow",
         )
 
-    record_data = record.model_dump()
-    workflow = create_workflow(db, record.customer_id, record_data)
+    workflow = create_workflow(db, record)
 
     # create_workflow may return an existing workflow if concurrent race occurred
-    if workflow.status != "PENDING":
+    if workflow.status != WorkflowRunStatus.PENDING:
         return SubmitResponse(
             workflow_id=workflow.id,
             status=workflow.status,
-            message="Duplicate submission - returning existing workflow",
+            message="Duplicate submission, returning existing workflow",
         )
 
-    background_tasks.add_task(run_pipeline, workflow.id, "ingestion", record_data)
+    background_tasks.add_task(PipelineRunner(workflow.id, WorkflowStageName.INGESTION, record).run)
 
     return SubmitResponse(
         workflow_id=workflow.id,
-        status="PENDING",
+        status=WorkflowRunStatus.PENDING,
         message="Workflow created and queued for processing",
     )
 
 
-@router.put("/submit/{customer_id}", response_model=SubmitResponse)
+@router.put("/{customer_id}", response_model=SubmitResponse)
 def update_record(
     customer_id: str,
     record: RecordSubmit,
@@ -84,28 +87,30 @@ def update_record(
     If no existing record, creates a new one.
     """
     existing = check_duplicate_submission(db, customer_id)
+
     if not existing:
+        workflow = create_workflow(db, record)
         record_data = record.model_dump()
-        workflow = create_workflow(db, record.customer_id, record_data)
-        background_tasks.add_task(run_pipeline, workflow.id, "ingestion", record_data)
+        from app.services.pipeline import PipelineRunner
+        background_tasks.add_task(PipelineRunner(workflow.id, WorkflowStageName.INGESTION, record_data).run)
         return SubmitResponse(
             workflow_id=workflow.id,
-            status="PENDING",
+            status=WorkflowRunStatus.PENDING,
             message="No existing record found - created new workflow",
         )
 
     record_data = record.model_dump()
     reset_workflow(db, existing.id)
-    background_tasks.add_task(run_pipeline, existing.id, "ingestion", record_data)
-
+    from app.services.pipeline import PipelineRunner
+    background_tasks.add_task(PipelineRunner(existing.id, WorkflowStageName.INGESTION, record_data).run)
     return SubmitResponse(
         workflow_id=existing.id,
-        status="PENDING",
+        status=WorkflowRunStatus.PENDING,
         message="Record updated - workflow reprocessing from start",
     )
 
 
-@router.post("/bulk-upload", response_model=BulkUploadResponse, status_code=201)
+@router.post("/bulk-ingest", response_model=BulkUploadResponse, status_code=201)
 async def bulk_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -160,7 +165,8 @@ async def bulk_upload(
             continue
 
         workflow = create_workflow(db, customer_id, record_data)
-        background_tasks.add_task(run_pipeline, workflow.id, "ingestion", record_data)
+        from app.services.pipeline import PipelineRunner
+        background_tasks.add_task(PipelineRunner(workflow.id, WorkflowStageName.INGESTION, record_data).run)
         workflow_ids.append(workflow.id)
         submitted += 1
 

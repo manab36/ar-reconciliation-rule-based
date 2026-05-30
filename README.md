@@ -190,9 +190,8 @@ app/
 ├── core/
 │   ├── config.py          # Settings via pydantic-settings
 │   └── database.py        # SQLAlchemy engine, session, Base
-├── models/
-│   ├── record.py          # ARRecord, ProcessedRecord ORM models
-│   └── workflow.py        # WorkflowRun, WorkflowStageState ORM models
+├── database_ops/
+│   └── model.py           # ARRecord, ProcessedRecord, WorkflowRun, WorkflowStageState ORM models
 ├── schemas/
 │   └── workflow.py        # Pydantic request/response schemas
 └── services/

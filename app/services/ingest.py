@@ -7,83 +7,10 @@ import structlog
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import get_db_session
-from app.models.record import ARRecord, ProcessedRecord
 from app.services.failure_sim import maybe_fail
+from database_ops.model import ARRecord, ProcessedRecord
 
 logger = structlog.get_logger()
-
-
-def ingest_record(workflow_id: str, record_data: dict) -> dict:
-    """Parse and persist the raw AR record with idempotency check."""
-    maybe_fail()
-
-    customer_id = record_data.get("customer_id")
-    idempotency_key = hashlib.sha256(
-        json.dumps(record_data, sort_keys=True).encode()
-    ).hexdigest()
-
-    with get_db_session() as db:
-        # Check for duplicate
-        existing = (
-            db.query(ProcessedRecord).filter_by(idempotency_key=idempotency_key).first()
-        )
-        if existing:
-            logger.info(
-                "duplicate_record_skipped",
-                customer_id=customer_id,
-                workflow_id=workflow_id,
-            )
-            return {"status": "DUPLICATE", "record_id": existing.invoice_id}
-
-        record_id = str(uuid.uuid4())
-        ar_record = ARRecord(
-            id=record_id,
-            customer_id=customer_id,
-            customer_name=record_data.get("customer_name"),
-            customer_balance=record_data.get("customer_balance"),
-            invoice_total=record_data.get("invoice_total"),
-            invoice_applied_amount=record_data.get("invoice_applied_amount"),
-            invoice_exchange_rate=record_data.get("invoice_exchange_rate"),
-            payment_total=record_data.get("payment_total"),
-            payment_applied_amount=record_data.get("payment_applied_amount"),
-            payment_exchange_rate=record_data.get("payment_exchange_rate"),
-            credit_total=record_data.get("credit_total"),
-            credit_applied_amount=record_data.get("credit_applied_amount"),
-            credit_exchange_rate=record_data.get("credit_exchange_rate"),
-            adjustment_total=record_data.get("adjustment_total"),
-            adjustment_applied_amount=record_data.get("adjustment_applied_amount"),
-            adjustment_exchange_rate=record_data.get("adjustment_exchange_rate"),
-        )
-
-        processed = ProcessedRecord(
-            invoice_id=record_id,
-            idempotency_key=idempotency_key,
-        )
-
-        db.add(ar_record)
-        db.add(processed)
-
-        # Flush to trigger unique constraint check before context manager commits
-        try:
-            db.flush()
-        except IntegrityError:
-            db.rollback()
-            existing = (
-                db.query(ProcessedRecord)
-                .filter_by(idempotency_key=idempotency_key)
-                .first()
-            )
-            if existing:
-                logger.info(
-                    "duplicate_record_concurrent",
-                    customer_id=customer_id,
-                    workflow_id=workflow_id,
-                )
-                return {"status": "DUPLICATE", "record_id": existing.invoice_id}
-            raise
-
-        logger.info("record_ingested", record_id=record_id, workflow_id=workflow_id)
-        return {"status": "INGESTED", "record_id": record_id}
 
 
 def parse_csv_records(file_path: str) -> list[dict]:
