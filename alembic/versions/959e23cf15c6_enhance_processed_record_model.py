@@ -1,8 +1,8 @@
-"""your_message_here
+"""enhance_processed_record_model
 
-Revision ID: 3cc46ebce382
+Revision ID: 959e23cf15c6
 Revises: 
-Create Date: 2026-05-30 16:22:42.022995
+Create Date: 2026-06-01 10:15:00.397334
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '3cc46ebce382'
+revision: str = '959e23cf15c6'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -50,38 +50,57 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('customer_id')
     )
-    op.create_table('processed_records',
-    sa.Column('id', sa.String(), nullable=False),
-    sa.Column('customer_id', sa.String(), nullable=False),
-    sa.Column('idempotency_key', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['customer_id'], ['customers.id'], ),
-    sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index(op.f('ix_processed_records_idempotency_key'), 'processed_records', ['idempotency_key'], unique=True)
     op.create_table('workflow_runs',
     sa.Column('id', sa.String(), nullable=False),
     sa.Column('customer_id', sa.String(), nullable=False),
-    sa.Column('status', sa.Enum('PENDING', 'RUNNING', 'SUCCESS', 'FAILED', 'COMPLETED', name='workflow_run_status'), nullable=False),
-    sa.Column('current_stage', sa.Enum('INGESTION', 'MATCHING', 'VALIDATION', 'DECISION_ROUTING', name='workflow_stage_name'), nullable=True),
+    sa.Column('status', sa.Enum('PENDING', 'RUNNING', 'FAILED', 'RETRYING', 'COMPLETED', name='workflow_run_status'), nullable=False),
+    sa.Column('current_stage', sa.Enum('INGESTION', 'NORMALIZATION', 'BALANCE_COMPUTE', 'RECONCILIATION', 'VALIDATION_RULES', 'VERDICT_GENERATION', 'REPORTING', name='workflow_stage_name'), nullable=False),
     sa.Column('retry_count', sa.Integer(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.Column('raw_data', sa.JSON(), nullable=False),
     sa.ForeignKeyConstraint(['customer_id'], ['customers.id'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('customer_id')
     )
+    op.create_table('processed_records',
+    sa.Column('id', sa.String(), nullable=False),
+    sa.Column('customer_id', sa.String(), nullable=False),
+    sa.Column('workflow_id', sa.String(), nullable=False),
+    sa.Column('verdict', sa.Enum('MATCH', 'OVERPAID', 'UNDERPAID', 'UNAPPLIED_PAYMENT', 'UNAPPLIED_CREDIT', 'MANUAL_REVIEW', name='reconciliation_verdict'), nullable=False),
+    sa.Column('confidence', sa.Integer(), nullable=False),
+    sa.Column('reason', sa.String(), nullable=True),
+    sa.Column('customer_balance', sa.Float(), nullable=True),
+    sa.Column('expected_balance', sa.Float(), nullable=True),
+    sa.Column('difference', sa.Float(), nullable=True),
+    sa.Column('invoice_outstanding', sa.Float(), nullable=True),
+    sa.Column('payment_unapplied', sa.Float(), nullable=True),
+    sa.Column('credit_available', sa.Float(), nullable=True),
+    sa.Column('adjustment_remaining', sa.Float(), nullable=True),
+    sa.Column('triggered_rules', sa.Text(), nullable=True),
+    sa.Column('summary_report', sa.Text(), nullable=True),
+    sa.Column('exception_report', sa.Text(), nullable=True),
+    sa.Column('audit_report', sa.Text(), nullable=True),
+    sa.Column('processing_started_at', sa.DateTime(), nullable=True),
+    sa.Column('processing_completed_at', sa.DateTime(), nullable=True),
+    sa.Column('total_processing_time_ms', sa.Integer(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), nullable=False),
+    sa.ForeignKeyConstraint(['customer_id'], ['customers.id'], ),
+    sa.ForeignKeyConstraint(['workflow_id'], ['workflow_runs.id'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_processed_records_customer_id'), 'processed_records', ['customer_id'], unique=False)
+    op.create_index(op.f('ix_processed_records_workflow_id'), 'processed_records', ['workflow_id'], unique=True)
     op.create_table('workflow_stage_state',
     sa.Column('id', sa.String(), nullable=False),
     sa.Column('workflow_id', sa.String(), nullable=False),
-    sa.Column('customer_id', sa.String(), nullable=False),
-    sa.Column('stage_name', sa.String(), nullable=False),
-    sa.Column('status', sa.Enum('PENDING', 'RUNNING', 'SUCCESS', 'FAILED', 'COMPLETED', name='workflow_run_status'), nullable=False),
+    sa.Column('stage_name', sa.Enum('INGESTION', 'NORMALIZATION', 'BALANCE_COMPUTE', 'RECONCILIATION', 'VALIDATION_RULES', 'VERDICT_GENERATION', 'REPORTING', name='workflow_stage_name'), nullable=False),
+    sa.Column('retry_count', sa.Integer(), nullable=False),
+    sa.Column('status', sa.Enum('PENDING', 'RUNNING', 'FAILED', 'RETRYING', 'COMPLETED', name='workflow_run_status'), nullable=False),
     sa.Column('output_json', sa.Text(), nullable=True),
     sa.Column('error_message', sa.Text(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['customer_id'], ['customers.id'], ),
     sa.ForeignKeyConstraint(['workflow_id'], ['workflow_runs.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
@@ -93,9 +112,10 @@ def downgrade() -> None:
     # ### commands auto generated by Alembic - please adjust! ###
     op.drop_index(op.f('ix_workflow_stage_state_workflow_id'), table_name='workflow_stage_state')
     op.drop_table('workflow_stage_state')
-    op.drop_table('workflow_runs')
-    op.drop_index(op.f('ix_processed_records_idempotency_key'), table_name='processed_records')
+    op.drop_index(op.f('ix_processed_records_workflow_id'), table_name='processed_records')
+    op.drop_index(op.f('ix_processed_records_customer_id'), table_name='processed_records')
     op.drop_table('processed_records')
+    op.drop_table('workflow_runs')
     op.drop_table('ar_records')
     op.drop_table('customers')
     # ### end Alembic commands ###

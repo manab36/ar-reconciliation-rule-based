@@ -1,5 +1,3 @@
-
-
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -9,11 +7,13 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.dashboard import router as dashboard_router
-from app.api.health import router as health_router
-from app.api.ar_reconciliation_records import router as ar_reconciliation_records_router
-from app.api.workflows import router as workflows_router
+# from app.api.ar_reconciliation_records import router as ar_reconciliation_records_router
+# from app.api.workflows import router as workflows_router
 from app.core.database import init_db
+from app.routes import ar_reconciliation, health
+
+# from app.services.ar_reconciliation_pipeline import pipeline_runner
+# from app.api.dashboard import router as dashboard_router
 
 
 def configure_logging():
@@ -32,14 +32,17 @@ def configure_logging():
         cache_logger_on_first_use=True,
     )
 
+
 configure_logging()
 logger = structlog.get_logger()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db()
     logger.info("database_initialized")
     yield
+
 
 app = FastAPI(
     title="AR Reconciliation Workflow Engine",
@@ -56,6 +59,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(
@@ -71,11 +75,14 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # Register routers with tags
-app.include_router(health_router, prefix="/health", tags=["health"])
-app.include_router(ar_reconciliation_records_router, prefix="/ar-records", tags=["ar_reconciliation_records"])
-app.include_router(workflows_router, tags=["workflows"])
-app.include_router(dashboard_router, tags=["dashboard"])
+app.include_router(health.router, prefix="/health", tags=["health"])
+app.include_router(
+    ar_reconciliation.router, prefix="/ar_records", tags=["ar_reconciliation_records"]
+)
+# app.include_router(pipeline_runner.router, prefix="/ar_pipeline", tags=["run_ar_pipeline"])
+
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

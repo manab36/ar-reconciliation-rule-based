@@ -1,36 +1,43 @@
 """Health check API routes."""
-from __future__ import annotations
-
 
 from __future__ import annotations
-from app.core.config import settings
+
 from datetime import datetime
+
 import pytz
 from fastapi import APIRouter, Query
-from app.schemas.health import HealthResponse, LivenessCheck, ReadinessCheck, StartupCheck, HealthCheckResponse
+
+from app.core.config import settings
+from app.schemas.health import (
+    HealthCheckResponse,
+    HealthResponse,
+    LivenessCheck,
+    ReadinessCheck,
+    StartupCheck,
+)
 
 router = APIRouter()
-
 
 
 def get_version() -> str:
     return settings.API_VERSION
 
+
 def get_timestamp() -> str:
     tz = pytz.timezone(settings.TIMEZONE)
     return datetime.now(tz).isoformat()
+
 
 def check_services() -> dict[str, str]:
     # TODO: Implement real dependency checks (DB, cache, etc.)
     return {"database": "ok"}
 
 
-
 @router.get("", response_model=HealthResponse)
 async def health_check():
     """
     Main health check endpoint for backwards compatibility.
-    Returns basic health information compatible with existing HealthResponse model.
+    Returns basic health information compatible with existing HealthResponse models.
     """
     return HealthResponse(
         status="healthy",
@@ -68,13 +75,17 @@ async def startup_check() -> StartupCheck:
 
 
 @router.get("/detailed", response_model=HealthCheckResponse)
-async def detailed_health_check(include_details: bool = Query(True, description="Include detailed check results")) -> HealthCheckResponse:
+async def detailed_health_check(
+    include_details: bool = Query(True, description="Include detailed check results"),
+) -> HealthCheckResponse:
     """
     Comprehensive health check with detailed information.
     Includes all health check types (liveness, readiness, startup).
     """
     liveness = LivenessCheck()
-    readiness = ReadinessCheck(status="ready", details=check_services() if include_details else {})
+    readiness = ReadinessCheck(
+        status="ready", details=check_services() if include_details else {}
+    )
     startup = StartupCheck(status="started", initialized=True)
     return HealthCheckResponse(
         liveness=liveness,

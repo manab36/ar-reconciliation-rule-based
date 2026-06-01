@@ -1,49 +1,77 @@
+from sqlalchemy import select
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
-from database_ops.model import Customer
+
+from database_ops.models import Customer
 
 
 class CustomerRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def add_customer(self, id: str, name: str, email: str = None, address: str = None, phone_number: str = None) -> Customer:
-        customer = Customer(id=id, name=name, email=email, address=address, phone_number=phone_number)
+    def create(
+        self,
+        customer_id: str,
+        customer_name: str,
+        email: str | None = None,
+        address: str | None = None,
+        phone_number: str | None = None,
+    ) -> Customer:
+        customer = Customer(
+            id=customer_id,
+            name=customer_name,
+            email=email,
+            address=address,
+            phone_number=phone_number,
+        )
+
         self.db.add(customer)
-        try:
-            self.db.commit()
-        except IntegrityError:
-            self.db.rollback()
-            raise
-        self.db.refresh(customer)
+        self.db.flush()  # Writes to DB but doesn't commit
+
         return customer
 
-    def get_customer_by_id(self, customer_id: str) -> Customer | None:
-        return self.db.query(Customer).filter_by(id=customer_id).first()
+    def get_by_id(
+        self,
+        customer_id: str,
+        lock_for_update: bool = False,
+    ) -> Customer | None:
 
-    def get_all_customers(self) -> list[Customer]:
-        return self.db.query(Customer).all()
+        stmt = select(Customer).where(Customer.id == customer_id)
 
-    def update_customer(self, customer_id: str, name: str = None, email: str = None, address: str = None, phone_number: str = None) -> Customer | None:
-        customer = self.get_customer_by_id(customer_id)
-        if not customer:
-            return None
+        if lock_for_update:
+            stmt = stmt.with_for_update()
+
+        return self.db.execute(stmt).scalar_one_or_none()
+
+    def get_all(self) -> list[Customer]:
+        stmt = select(Customer)
+        return list(self.db.execute(stmt).scalars().all())
+
+    def update(
+        self,
+        customer: Customer,
+        *,
+        name: str | None = None,
+        email: str | None = None,
+        address: str | None = None,
+        phone_number: str | None = None,
+    ) -> Customer:
+
         if name is not None:
             customer.name = name
+
         if email is not None:
             customer.email = email
+
         if address is not None:
             customer.address = address
+
         if phone_number is not None:
             customer.phone_number = phone_number
-        self.db.commit()
-        self.db.refresh(customer)
+
+        self.db.flush()
+
         return customer
 
-    def delete_customer(self, customer_id: str) -> bool:
-        customer = self.get_customer_by_id(customer_id)
-        if not customer:
-            return False
+    def delete(self, customer: Customer) -> None:
         self.db.delete(customer)
-        self.db.commit()
-        return True
+        self.db.flush()
