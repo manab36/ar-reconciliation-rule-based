@@ -4,10 +4,11 @@ Stage 5: Validation Rules
 Purpose: Run business rules against reconciliation results.
 
 Rules:
-- Rule A: abs(difference) < 0.01 -> MATCH
-- Rule B: customer_balance < expected_balance -> OVERPAID (customer paid more than expected)
+- Rule A: abs(difference) within tolerance (absolute floor OR % of expected) -> MATCH
+- Rule B: customer_balance < expected_balance (beyond tolerance) -> OVERPAID
 - Rule C: payment_unapplied > 0 -> UNAPPLIED_PAYMENT
 - Rule D: credit_available > 0 -> UNAPPLIED_CREDIT
+- Rule E: customer_balance > expected_balance (beyond tolerance) -> UNDERPAID
 
 Output: validation_result
 
@@ -17,6 +18,7 @@ Includes random failure simulation for testing retry logic.
 from enum import StrEnum
 from typing import Any
 
+from app.core.config import settings
 from app.services.ar_reconciliation_pipeline.failure_utils import maybe_fail
 
 
@@ -28,23 +30,37 @@ class ValidationRule(StrEnum):
     UNAPPLIED_CREDIT = "UNAPPLIED_CREDIT"
 
 
-# Tolerance threshold for matching
+# Absolute floor tolerance (handles zero/near-zero expected balances and float noise)
 MATCH_THRESHOLD = 0.01
+
+
+def _match_tolerance(expected_balance: float) -> float:
+    """
+    Effective tolerance for a record = max(absolute floor, % of |expected_balance|).
+    """
+    pct_tolerance = abs(expected_balance) * (settings.MATCH_TOLERANCE_PERCENT / 100.0)
+    return max(MATCH_THRESHOLD, pct_tolerance)
 
 
 def _apply_rule_a(record: dict[str, Any]) -> dict[str, Any]:
     """
     Rule A: Check if difference is within tolerance (MATCH).
+    Tolerance = max(MATCH_THRESHOLD, MATCH_TOLERANCE_PERCENT% of expected_balance).
     """
     difference = record.get("difference", 0.0)
-    is_match = abs(difference) < MATCH_THRESHOLD
+    expected_balance = record.get("expected_balance", 0.0)
+    tolerance = _match_tolerance(expected_balance)
+    is_match = abs(difference) <= tolerance
 
     return {
         "rule_id": "A",
         "rule_name": "Balance Match Check",
         "triggered": is_match,
         "result": ValidationRule.MATCH if is_match else None,
-        "details": f"Difference: {difference}, Threshold: {MATCH_THRESHOLD}",
+        "details": (
+            f"Difference: {difference}, Tolerance: {round(tolerance, 4)} "
+            f"(pct={settings.MATCH_TOLERANCE_PERCENT}%, floor={MATCH_THRESHOLD})"
+        ),
     }
 
 
@@ -55,9 +71,10 @@ def _apply_rule_b(record: dict[str, Any]) -> dict[str, Any]:
     """
     customer_balance = record.get("customer_balance", 0.0)
     expected_balance = record.get("expected_balance", 0.0)
+    tolerance = _match_tolerance(expected_balance)
 
-    # Customer owes less than expected = they've overpaid
-    is_overpaid = customer_balance < (expected_balance - MATCH_THRESHOLD)
+    # Customer owes less than expected (beyond tolerance) = they've overpaid
+    is_overpaid = customer_balance < (expected_balance - tolerance)
 
     return {
         "rule_id": "B",
@@ -107,8 +124,9 @@ def _apply_underpaid_rule(record: dict[str, Any]) -> dict[str, Any]:
     """
     customer_balance = record.get("customer_balance", 0.0)
     expected_balance = record.get("expected_balance", 0.0)
+    tolerance = _match_tolerance(expected_balance)
 
-    is_underpaid = customer_balance > (expected_balance + MATCH_THRESHOLD)
+    is_underpaid = customer_balance > (expected_balance + tolerance)
 
     return {
         "rule_id": "E",

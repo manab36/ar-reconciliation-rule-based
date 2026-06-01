@@ -26,10 +26,11 @@ Includes random failure simulation for testing retry logic.
 from datetime import UTC, datetime
 from typing import Any
 
+from app.core.config import settings
 from app.services.ar_reconciliation_pipeline.failure_utils import maybe_fail
 
 # Rule version for audit tracking
-RULES_VERSION = "1.0.0"
+RULES_VERSION = "1.1.0"
 
 
 def _generate_summary_report(
@@ -142,12 +143,17 @@ def _generate_audit_report(
                 {
                     "id": "A",
                     "name": "Balance Match Check",
-                    "description": "abs(difference) < 0.01 -> MATCH",
+                    "description": (
+                        f"abs(difference) <= max(0.01, {settings.MATCH_TOLERANCE_PERCENT}% "
+                        "of expected_balance) -> MATCH"
+                    ),
                 },
                 {
                     "id": "B",
                     "name": "Overpayment Check",
-                    "description": "customer_balance < expected_balance -> OVERPAID",
+                    "description": (
+                        "customer_balance < expected_balance - tolerance -> OVERPAID"
+                    ),
                 },
                 {
                     "id": "C",
@@ -162,7 +168,9 @@ def _generate_audit_report(
                 {
                     "id": "E",
                     "name": "Underpayment Check",
-                    "description": "customer_balance > expected_balance -> UNDERPAID",
+                    "description": (
+                        "customer_balance > expected_balance + tolerance -> UNDERPAID"
+                    ),
                 },
             ],
         },

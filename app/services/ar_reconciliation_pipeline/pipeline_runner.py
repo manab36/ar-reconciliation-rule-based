@@ -12,6 +12,7 @@ from app.services.ar_reconciliation_pipeline.pipeline_config import (
 )
 from database_ops.models import (
     ARRecord,
+    Customer,
     WorkflowRunStatus,
     WorkflowStageName,
     WorkflowStageState,
@@ -25,6 +26,44 @@ from database_ops.services.processed_record_service import ProcessedRecordServic
 
 logger = structlog.get_logger()
 router = APIRouter(tags=["run_ar_pipeline"])
+
+# Mapping from ARRecord snake_case field names to pipeline expected field names
+AR_RECORD_FIELD_MAPPING = {
+    "customer_id": "Customer ID",
+    "customer_balance": "Customer Balance",
+    "invoice_total": "Invoice Total",
+    "invoice_applied_amount": "Invoice applied amount",
+    "invoice_exchange_rate": "Invoice exchange rate",
+    "payment_total": "Payment Total",
+    "payment_applied_amount": "Payment applied amount",
+    "payment_exchange_rate": "Payment exchange rate",
+    "credit_total": "Credit Total",
+    "credit_applied_amount": "Credit applied amount",
+    "credit_exchange_rate": "Credit exchange rate",
+    "adjustment_total": "Adjustment Total",
+    "adjustment_applied_amount": "Adjustment applied amount",
+    "adjustment_exchange_rate": "Adjustment exchange rate",
+}
+
+
+def _map_ar_record_to_pipeline_format(ar_record_dict: dict) -> dict:
+    """
+    Convert ARRecord dict with snake_case keys to pipeline expected format.
+
+    ARRecord uses: customer_balance, invoice_total, etc.
+    Pipeline expects: "Customer Balance", "Invoice Total", etc.
+    """
+    mapped = {}
+    for db_field, pipeline_field in AR_RECORD_FIELD_MAPPING.items():
+        if db_field in ar_record_dict:
+            mapped[pipeline_field] = ar_record_dict[db_field]
+
+    # Also keep original fields for compatibility and pass through any unmapped fields
+    for key, value in ar_record_dict.items():
+        if key not in AR_RECORD_FIELD_MAPPING:
+            mapped[key] = value
+
+    return mapped
 
 
 class PipelineRunner:
@@ -55,11 +94,19 @@ class PipelineRunner:
                     db.query(ARRecord).filter_by(customer_id=self.customer_id).first()
                 )
                 if ar_record:
-                    # Convert SQLAlchemy models to dict
-                    self.current_processed_data = {
+                    # Convert SQLAlchemy model to dict with snake_case keys
+                    raw_data = {
                         c.name: getattr(ar_record, c.name)
                         for c in ar_record.__table__.columns
                     }
+                    # Map to pipeline expected field names (space-separated)
+                    self.current_processed_data = _map_ar_record_to_pipeline_format(
+                        raw_data
+                    )
+                    # Also fetch customer name from Customer table
+                    customer = db.query(Customer).filter_by(id=self.customer_id).first()
+                    if customer:
+                        self.current_processed_data["Customer Name"] = customer.name
                 else:
                     self.current_processed_data = {}
         else:
